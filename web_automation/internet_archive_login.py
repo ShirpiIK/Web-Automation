@@ -1,73 +1,34 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from web_automation.config import Settings
 
 
-Locator = tuple[str, str]
-
-
-EMAIL_LOCATORS: list[Locator] = [
-    (By.CSS_SELECTOR, "input[type='email']"),
-    (By.CSS_SELECTOR, "input[name='email']"),
-    (By.CSS_SELECTOR, "input[name='emailAddress']"),
-    (By.CSS_SELECTOR, "input[name='username']"),
-    (By.CSS_SELECTOR, "input[name='identifier']"),
-    (By.CSS_SELECTOR, "input[autocomplete='email']"),
-    (By.CSS_SELECTOR, "input#email"),
-    (By.CSS_SELECTOR, "input#username"),
-    (By.CSS_SELECTOR, "input#identifier"),
-    (By.XPATH, "//label[contains(normalize-space(), 'Email address')]/following::input[1]"),
-    (
-        By.XPATH,
-        "//*[self::label or self::div or self::span]"
-        "[contains(normalize-space(), 'Email address')]/following::input[1]",
-    ),
+EMAIL_SELECTORS = [
+    "input[type='email']",
+    "input[name='email']",
+    "input[name='username']",
+    ".login-form input[type='text']"
 ]
 
-PASSWORD_LOCATORS: list[Locator] = [
-    (By.CSS_SELECTOR, "input[type='password']"),
-    (By.CSS_SELECTOR, "input[name='password']"),
-    (By.CSS_SELECTOR, "input[autocomplete='current-password']"),
-    (By.CSS_SELECTOR, "input#password"),
-    (By.XPATH, "//label[contains(normalize-space(), 'Password')]/following::input[1]"),
-    (
-        By.XPATH,
-        "//*[self::label or self::div or self::span]"
-        "[contains(normalize-space(), 'Password')]/following::input[1]",
-    ),
+PASSWORD_SELECTORS = [
+    "input[type='password']",
+    "input[name='password']"
 ]
 
-SUBMIT_LOCATORS: list[Locator] = [
-    (By.XPATH, "//button[normalize-space()='Log in']"),
-    (By.XPATH, "//button[normalize-space()='Log In']"),
-    (By.CSS_SELECTOR, "button[type='submit']"),
-    (By.CSS_SELECTOR, "input[type='submit']"),
+SUBMIT_SELECTORS = [
+    "ia-button[type='submit']",
+    "button[type='submit']",
+    ".login-button"
 ]
-
-LOGIN_SUCCESS_SELECTORS = [
-    "a[href*='/account/logout']",
-    "a[href='/account']",
-    "a[href*='/account/']",
-    "button[aria-label*='account' i]",
-    "button[aria-label*='profile' i]",
-]
-
-ERROR_SELECTORS = [
-    ".error",
-    ".alert",
-    "[role='alert']",
-    ".login-error",
-]
-
 
 class InternetArchiveLogin:
     def __init__(self, driver: WebDriver, settings: Settings) -> None:
@@ -75,93 +36,107 @@ class InternetArchiveLogin:
         self.settings = settings
         self.wait = WebDriverWait(driver, settings.timeout_seconds)
 
+    def save_debug_info(self, step_name: str) -> None:
+        output_dir = Path("artifacts") / "debug"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.driver.save_screenshot(str(output_dir / f"{step_name}.png"))
+        with open(output_dir / f"{step_name}.html", "w", encoding="utf-8") as f:
+            f.write(self.driver.page_source)
+        print(f"[DEBUG] Saved debug files for '{step_name}'")
+
+    def _get_shadow_element(self, selectors: list[str]) -> WebElement | None:
+        """JavaScript vazhiya Shadow DOM kulla elements ah thedura function."""
+        js = """
+        function findInShadows(selector, root = document.body) {
+            let el = root.querySelector(selector);
+            if (el) return el;
+            let elements = root.querySelectorAll('*');
+            for (let i = 0; i < elements.length; i++) {
+                if (elements[i].shadowRoot) {
+                    let found = findInShadows(selector, elements[i].shadowRoot);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+        for (let sel of arguments[0]) {
+            let el = findInShadows(sel);
+            if (el) return el;
+        }
+        return null;
+        """
+        return self.driver.execute_script(js, selectors)
+
+    def _wait_for_shadow_element(self, selectors: list[str], name: str) -> WebElement:
+        """Element render aagura varaikum wait panni, adha scroll panni edukkum."""
+        end_time = time.time() + self.settings.timeout_seconds
+        while time.time() < end_time:
+            el = self._get_shadow_element(selectors)
+            if el:
+                # Screen la theliva theriya center ku scroll pandrom
+                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", el)
+                time.sleep(0.5) 
+                return el
+            time.sleep(1)
+        raise TimeoutException(f"Could not find {name} inside Shadow DOM.")
+
     def run(self) -> bool:
+        print("[INFO] Navigating to login URL...")
         self.driver.get(self.settings.login_url)
-
-        email_input = self._first_visible_locator(EMAIL_LOCATORS, "email address field")
-        password_input = self._first_visible_locator(PASSWORD_LOCATORS, "password field")
-
-        self._replace_text(email_input, self.settings.internet_archive_email)
-        self._replace_text(password_input, self.settings.internet_archive_password)
-
-        submit_button = self._first_clickable_locator(SUBMIT_LOCATORS, "Log in button")
-        submit_button.click()
+        self.save_debug_info("1_after_page_load")
 
         try:
-            self.wait.until(self._login_completed)
+            print("[INFO] Searching for email field...")
+            email_input = self._wait_for_shadow_element(EMAIL_SELECTORS, "email address field")
+            
+            print("[INFO] Searching for password field...")
+            password_input = self._wait_for_shadow_element(PASSWORD_SELECTORS, "password field")
+
+            print("[INFO] Entering credentials...")
+            # Shadow DOM ulla elements ku normal send_keys silar neram work aagadhu, so JS dispatch event use pandrom
+            self.driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_input, self.settings.internet_archive_email)
+            self.driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", password_input, self.settings.internet_archive_password)
+            
+            self.save_debug_info("2_after_entering_credentials")
+
+            print("[INFO] Searching for submit button...")
+            submit_button = self._wait_for_shadow_element(SUBMIT_SELECTORS, "Log in button")
+            
+            print("[INFO] Clicking submit button...")
+            self.driver.execute_script("arguments[0].click();", submit_button)
+            
+            self.save_debug_info("3_after_submit_click")
+
+            print("[INFO] Waiting for login to complete...")
+            end_time = time.time() + self.settings.timeout_seconds
+            logged_in = False
+            while time.time() < end_time:
+                # URL maariyurukka nu check pandrom
+                if "/login" not in self.driver.current_url.lower():
+                    logged_in = True
+                    break
+                # User profile icon login aanadhum varudha nu check pandrom
+                if self._get_shadow_element(["a[href*='/account/logout']", "button[aria-label*='profile' i]"]):
+                    logged_in = True
+                    break
+                time.sleep(1)
+            
+            if not logged_in:
+                raise TimeoutException("Login completion check timed out. Verification page vandhurukalama nu check pannunga.")
+            
         except TimeoutException as exc:
-            error_message = self._visible_error_message()
-            if error_message:
-                raise RuntimeError(f"Internet Archive login failed: {error_message}") from exc
-            raise RuntimeError(
-                "Login was not confirmed. If a CAPTCHA, OTP, or verification page appeared, "
-                "complete it manually and run again."
-            ) from exc
+            print("[ERROR] Timeout occurred. Saving failure state...")
+            self.save_debug_info("4_timeout_failure_state")
+            raise RuntimeError("Login failed. Check artifacts/debug screenshots.") from exc
+        except Exception as exc:
+            print(f"[ERROR] Unexpected error: {exc}")
+            self.save_debug_info("5_unexpected_error_state")
+            raise
 
         if self.settings.save_login_screenshot:
-            self.save_screenshot("login-success.png")
+            output_dir = Path("artifacts") / "screenshots"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self.driver.save_screenshot(str(output_dir / "login-success.png"))
 
+        print("[INFO] Login completed successfully.")
         return True
-
-    def save_screenshot(self, file_name: str) -> Path:
-        output_dir = Path("artifacts") / "screenshots"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / file_name
-        self.driver.save_screenshot(str(path))
-        return path
-
-    def _first_visible_locator(self, locators: list[Locator], name: str) -> WebElement:
-        last_error: TimeoutException | None = None
-        for locator in locators:
-            try:
-                return self.wait.until(
-                    EC.visibility_of_element_located(locator)
-                )
-            except TimeoutException as exc:
-                last_error = exc
-
-        searched = "; ".join(f"{by}={value}" for by, value in locators)
-        raise TimeoutException(
-            f"Could not find the visible {name}. Searched: {searched}"
-        ) from last_error
-
-    def _first_clickable_locator(self, locators: list[Locator], name: str) -> WebElement:
-        last_error: TimeoutException | None = None
-        for locator in locators:
-            try:
-                return self.wait.until(
-                    EC.element_to_be_clickable(locator)
-                )
-            except TimeoutException as exc:
-                last_error = exc
-
-        searched = "; ".join(f"{by}={value}" for by, value in locators)
-        raise TimeoutException(
-            f"Could not find the clickable {name}. Searched: {searched}"
-        ) from last_error
-
-    def _replace_text(self, element: WebElement, value: str) -> None:
-        element.clear()
-        element.send_keys(value)
-
-    def _login_completed(self, driver: WebDriver) -> bool:
-        current_url = driver.current_url.lower()
-        if "/login" not in current_url and "/account/login" not in current_url:
-            return True
-
-        for selector in LOGIN_SUCCESS_SELECTORS:
-            if self._has_visible_element(selector):
-                return True
-
-        return False
-
-    def _has_visible_element(self, selector: str) -> bool:
-        return any(element.is_displayed() for element in self.driver.find_elements(By.CSS_SELECTOR, selector))
-
-    def _visible_error_message(self) -> str:
-        messages = []
-        for selector in ERROR_SELECTORS:
-            for element in self.driver.find_elements(By.CSS_SELECTOR, selector):
-                if element.is_displayed() and element.text.strip():
-                    messages.append(element.text.strip())
-        return " ".join(messages)
