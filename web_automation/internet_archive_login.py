@@ -12,23 +12,45 @@ from selenium.webdriver.support.ui import WebDriverWait
 from web_automation.config import Settings
 
 
-EMAIL_SELECTORS = [
-    "input[type='email']",
-    "input[name='email']",
-    "input[name='username']",
-    "input#email",
-    "input#username",
+Locator = tuple[str, str]
+
+
+EMAIL_LOCATORS: list[Locator] = [
+    (By.CSS_SELECTOR, "input[type='email']"),
+    (By.CSS_SELECTOR, "input[name='email']"),
+    (By.CSS_SELECTOR, "input[name='emailAddress']"),
+    (By.CSS_SELECTOR, "input[name='username']"),
+    (By.CSS_SELECTOR, "input[name='identifier']"),
+    (By.CSS_SELECTOR, "input[autocomplete='email']"),
+    (By.CSS_SELECTOR, "input#email"),
+    (By.CSS_SELECTOR, "input#username"),
+    (By.CSS_SELECTOR, "input#identifier"),
+    (By.XPATH, "//label[contains(normalize-space(), 'Email address')]/following::input[1]"),
+    (
+        By.XPATH,
+        "//*[self::label or self::div or self::span]"
+        "[contains(normalize-space(), 'Email address')]/following::input[1]",
+    ),
 ]
 
-PASSWORD_SELECTORS = [
-    "input[type='password']",
-    "input[name='password']",
-    "input#password",
+PASSWORD_LOCATORS: list[Locator] = [
+    (By.CSS_SELECTOR, "input[type='password']"),
+    (By.CSS_SELECTOR, "input[name='password']"),
+    (By.CSS_SELECTOR, "input[autocomplete='current-password']"),
+    (By.CSS_SELECTOR, "input#password"),
+    (By.XPATH, "//label[contains(normalize-space(), 'Password')]/following::input[1]"),
+    (
+        By.XPATH,
+        "//*[self::label or self::div or self::span]"
+        "[contains(normalize-space(), 'Password')]/following::input[1]",
+    ),
 ]
 
-SUBMIT_SELECTORS = [
-    "button[type='submit']",
-    "input[type='submit']",
+SUBMIT_LOCATORS: list[Locator] = [
+    (By.XPATH, "//button[normalize-space()='Log in']"),
+    (By.XPATH, "//button[normalize-space()='Log In']"),
+    (By.CSS_SELECTOR, "button[type='submit']"),
+    (By.CSS_SELECTOR, "input[type='submit']"),
 ]
 
 LOGIN_SUCCESS_SELECTORS = [
@@ -56,13 +78,13 @@ class InternetArchiveLogin:
     def run(self) -> bool:
         self.driver.get(self.settings.login_url)
 
-        email_input = self._first_visible_css(EMAIL_SELECTORS)
-        password_input = self._first_visible_css(PASSWORD_SELECTORS)
+        email_input = self._first_visible_locator(EMAIL_LOCATORS, "email address field")
+        password_input = self._first_visible_locator(PASSWORD_LOCATORS, "password field")
 
         self._replace_text(email_input, self.settings.internet_archive_email)
         self._replace_text(password_input, self.settings.internet_archive_password)
 
-        submit_button = self._first_clickable_css(SUBMIT_SELECTORS)
+        submit_button = self._first_clickable_locator(SUBMIT_LOCATORS, "Log in button")
         submit_button.click()
 
         try:
@@ -88,31 +110,35 @@ class InternetArchiveLogin:
         self.driver.save_screenshot(str(path))
         return path
 
-    def _first_visible_css(self, selectors: list[str]) -> WebElement:
+    def _first_visible_locator(self, locators: list[Locator], name: str) -> WebElement:
         last_error: TimeoutException | None = None
-        for selector in selectors:
+        for locator in locators:
             try:
                 return self.wait.until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+                    EC.visibility_of_element_located(locator)
                 )
             except TimeoutException as exc:
                 last_error = exc
 
-        joined = ", ".join(selectors)
-        raise TimeoutException(f"Could not find a visible element matching: {joined}") from last_error
+        searched = "; ".join(f"{by}={value}" for by, value in locators)
+        raise TimeoutException(
+            f"Could not find the visible {name}. Searched: {searched}"
+        ) from last_error
 
-    def _first_clickable_css(self, selectors: list[str]) -> WebElement:
+    def _first_clickable_locator(self, locators: list[Locator], name: str) -> WebElement:
         last_error: TimeoutException | None = None
-        for selector in selectors:
+        for locator in locators:
             try:
                 return self.wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    EC.element_to_be_clickable(locator)
                 )
             except TimeoutException as exc:
                 last_error = exc
 
-        joined = ", ".join(selectors)
-        raise TimeoutException(f"Could not find a clickable element matching: {joined}") from last_error
+        searched = "; ".join(f"{by}={value}" for by, value in locators)
+        raise TimeoutException(
+            f"Could not find the clickable {name}. Searched: {searched}"
+        ) from last_error
 
     def _replace_text(self, element: WebElement, value: str) -> None:
         element.clear()
